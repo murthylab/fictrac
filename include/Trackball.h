@@ -175,7 +175,7 @@ private:
     /// Data i/o.
     std::string _base_fn;
     std::unique_ptr<FrameGrabber> _frameGrabber;
-    bool _do_sock_output, _do_com_output;
+    bool _do_sock_output, _do_com_output, _do_shmem_output;
     std::unique_ptr<Recorder> _data_log, _data_sock, _data_com, _vid_frames;
 
     /// Thread stuff.

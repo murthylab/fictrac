@@ -28,6 +28,9 @@
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/videoio.hpp>
 
+// Stuff for shared memory output and control
+#include "SharedMemTransferData.h"
+
 #include <sstream>
 #include <cmath>
 #include <exception>
@@ -434,6 +437,19 @@ Trackball::Trackball(string cfg_fn)
         }
         _do_com_output = true;
     }
+
+    // Shared memory output\control - yes or no
+    _do_shmem_output = false;
+    if (!_cfg.getBool("do_shmem", _do_shmem_output))
+        _cfg.add("do_shmem", _do_shmem_output ? "y" : "n");
+   
+    if (_do_shmem_output) {
+        auto shared_memory_data = setupSHMEMRegion<SHMEMTransferData>("FicTracStateSHMEM");
+        
+        // Also setup a shared memory variable that allows signalling to close the program. 
+        auto shared_memory_signal = setupSHMEMRegion<SHMEMSignalData>("FicTracStateSHMEM_SIGNALS");
+    }
+
 
     /// Display.
     _do_display = DO_DISPLAY_DEFAULT;
@@ -1024,6 +1040,19 @@ bool Trackball::logData()
     if (_do_com_output) {
         ret &= _data_com->addMsg("FT, " + ss.str());
     }
+    if (_do_shmem_output) {
+        
+        // Copy the tracking data to shared memory for other processes that want it
+        if (shared_memory_data != NULL)
+            fillSHMEMData(shared_memory_data, _data.cnt, _data.dr_cam, _err, _data.dr_lab, _data.r_cam, _data.r_lab, _data.posx, _data.posy, _data.heading, _data.step_dir, _data.step_mag, _data.intx, _data.inty, _data.ts, _data.seq);
+
+        // While were at it, check if the program has received close signal from having a special shared memory value set
+        if (shared_memory_signal->close == 1) {
+            printf("Received close signal from special shared memory variable. Shutting down.\n");
+            ACTIVE = false;
+        }
+    }
+
     ret &= _data_log->addMsg(ss.str());
     return ret;
 }
