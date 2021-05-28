@@ -28,15 +28,12 @@
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/videoio.hpp>
 
-// Stuff for shared memory output and control
-#include "SharedMemTransferData.h"
-
+#include <memory>
 #include <sstream>
 #include <cmath>
 #include <exception>
 
 using namespace cv;
-using namespace std;
 
 const int DRAW_SPHERE_HIST_LENGTH = 1024;
 const int DRAW_CELL_DIM = 160;
@@ -54,7 +51,7 @@ const double THRESH_WIN_PC_DEFAULT = 0.25;
 
 const uint8_t SPHERE_MAP_FIRST_HIT_BONUS = 64;
 
-const string SOCK_HOST_DEFAULT = "127.0.0.1";
+const std::string SOCK_HOST_DEFAULT = "127.0.0.1";
 const int SOCK_PORT_DEFAULT = -1;
 
 const int COM_BAUD_DEFAULT = 115200;
@@ -64,7 +61,7 @@ const bool SAVE_RAW_DEFAULT = false;
 const bool SAVE_DEBUG_DEFAULT = false;
 
 /// OpenCV codecs for video writing
-const vector<vector<std::string>> CODECS = {
+const std::vector<std::vector<std::string>> CODECS = {
     {"h264", "H264", "avi"},
     {"xvid", "XVID", "avi"},
     {"mpg4", "MP4V", "mp4"},
@@ -94,11 +91,11 @@ bool intersectSphere(const double r, const double camVec[3], double sphereVec[3]
 ///
 /// 
 ///
-Trackball::Trackball(string cfg_fn)
+Trackball::Trackball(std::string cfg_fn)
     : _init(false), _reset(true), _clean_map(true), _active(true), _kill(false), _do_reset(false)
 {
     /// Save execTime for outptut file naming.
-    string exec_time = execTime();
+    std::string exec_time = execTime();
 
     /// Load and parse config file.
     if (_cfg.read(cfg_fn) <= 0) {
@@ -108,8 +105,8 @@ Trackball::Trackball(string cfg_fn)
     }
 
     /// Open frame source and set fps.
-    string src_fn = _cfg("src_fn");
-    shared_ptr<FrameSource> source;
+    std::string src_fn = _cfg("src_fn");
+    std::shared_ptr<FrameSource> source;
     // try specific camera sdk first if available
 #if defined(PGR_USB2) || defined(PGR_USB3) || defined(BASLER_USB3)
     try {
@@ -117,17 +114,17 @@ Trackball::Trackball(string cfg_fn)
         // first try reading input as camera id
         int id = std::stoi(src_fn);
 #if defined(PGR_USB2) || defined(PGR_USB3)
-        source = make_shared<PGRSource>(id);
+        source = std::make_shared<PGRSource>(id);
 #elif defined(BASLER_USB3)
-        source = make_shared<BaslerSource>(id);
+        source = std::make_shared<BaslerSource>(id);
 #endif // PGR/BASLER
     }
     catch (...) {
         // fall back to OpenCV
-        source = make_shared<CVSource>(src_fn);
+        source = std::make_shared<CVSource>(src_fn);
     }
 #else // !PGR/BASLER
-    source = make_shared<CVSource>(src_fn);
+    source = std::make_shared<CVSource>(src_fn);
 #endif // PGR/BASLER
     if (!source->isOpen()) {
         LOG_ERR("Error! Could not open input frame source (%s)!", src_fn.c_str());
@@ -187,14 +184,14 @@ Trackball::Trackball(string cfg_fn)
     {
         // read pts from config file
         _sphere_rad = -1;
-        vector<int> circ_pxs;
-        vector<double> sphere_c;
+        std::vector<int> circ_pxs;
+        std::vector<double> sphere_c;
         if (!reconfig && _cfg.getVecDbl("roi_c", sphere_c) && _cfg.getDbl("roi_r", _sphere_rad)) {
             _sphere_c.copy(sphere_c.data());
             LOG_DBG("Found sphere ROI centred at [%f %f %f], with radius %f rad.", _sphere_c[0], _sphere_c[1], _sphere_c[2], _sphere_rad);
         }
         else if (_cfg.getVecInt("roi_circ", circ_pxs)) {
-            vector<Point2d> circ_pts;
+            std::vector<Point2d> circ_pts;
             for (unsigned int i = 1; i < circ_pxs.size(); i += 2) {
                 circ_pts.push_back(Point2d(circ_pxs[i - 1], circ_pxs[i]));
             }
@@ -215,12 +212,12 @@ Trackball::Trackball(string cfg_fn)
             cv::fillConvexPoly(src_mask, *int_circ, CV_RGB(255, 255, 255));
 
             /// Mask out ignore regions.
-            vector<vector<int>> ignr_polys;
+            std::vector<std::vector<int>> ignr_polys;
             if (_cfg.getVVecInt("roi_ignr", ignr_polys) && (ignr_polys.size() > 0)) {
                 /// Load ignore polys from config file.
-                vector<vector<Point2i>> ignr_polys_pts;
+                std::vector<std::vector<Point2i>> ignr_polys_pts;
                 for (auto poly : ignr_polys) {
-                    ignr_polys_pts.push_back(vector<Point2i>());
+                    ignr_polys_pts.push_back(std::vector<Point2i>());
                     for (unsigned int i = 1; i < poly.size(); i += 2) {
                         ignr_polys_pts.back().push_back(Point2i(poly[i - 1], poly[i]));
                     }
@@ -254,9 +251,9 @@ Trackball::Trackball(string cfg_fn)
         LOG_DBG("roi_to_cam_r: %.4f %.4f %.4f", roi_to_cam_r[0], roi_to_cam_r[1], roi_to_cam_r[2]);
 
         // Cam to lab transformation from configuration.
-        vector<double> c2a_r;
-        string c2a_src;
-        vector<int> c2a_pts;
+        std::vector<double> c2a_r;
+        std::string c2a_src;
+        std::vector<int> c2a_pts;
         if (!reconfig && _cfg.getVecDbl("c2a_r", c2a_r) && (c2a_r.size() == 3)) {
             CmPoint64f cam_to_lab_r = CmPoint64f(c2a_r[0], c2a_r[1], c2a_r[2]);
             _cam_to_lab_R = CmPoint64f::omegaToMatrix(cam_to_lab_r);
@@ -264,7 +261,7 @@ Trackball::Trackball(string cfg_fn)
         }
         else if (_cfg.getStr("c2a_src", c2a_src) && _cfg.getVecInt(c2a_src, c2a_pts)) {
             // c2a source and pixel coords present - recompute transform
-            vector<Point2d> cnrs;
+            std::vector<Point2d> cnrs;
             for (unsigned int i = 1; i < c2a_pts.size(); i += 2) {
                 cnrs.push_back(cv::Point2d(c2a_pts[i - 1], c2a_pts[i]));
             }
@@ -307,7 +304,7 @@ Trackball::Trackball(string cfg_fn)
     /// Surface map template.
     _sphere_template = _sphere_map.clone();
     {
-        string sphere_template_fn;
+        std::string sphere_template_fn;
         if (_cfg.getStr("sphere_map_fn", sphere_template_fn)) {
             _sphere_template = cv::imread(sphere_template_fn, 0);
             if ((_sphere_template.cols != _map_w) || (_sphere_template.rows != _map_h)) {
@@ -325,7 +322,7 @@ Trackball::Trackball(string cfg_fn)
     }
 
     /// Pre-calc view rays.
-    _p1s_lut = make_shared<vector<double>>(_roi_w * _roi_h * 3, 0);
+    _p1s_lut = std::make_shared<std::vector<double>>(_roi_w * _roi_h * 3, 0);
     for (int i = 0; i < _roi_h; i++) {
         uint8_t* pmask = _roi_mask.ptr(i);
         for (int j = 0; j < _roi_w; j++) {
@@ -383,19 +380,19 @@ Trackball::Trackball(string cfg_fn)
     }
 
     /// Init optimisers.
-    _localOpt = make_unique<Localiser>(
+    _localOpt = std::make_unique<Localiser>(
         NLOPT_LN_BOBYQA, bound, tol, max_evals,
         _sphere_model, _sphere_map,
         _roi_mask, _p1s_lut);
 
-    _globalOpt = make_unique<Localiser>(
+    _globalOpt = std::make_unique<Localiser>(
         NLOPT_GN_CRS2_LM, CM_PI, tol, 1e5,
         _sphere_model, _sphere_map,
         _roi_mask, _p1s_lut);
 
     /// Output.
-    string data_fn = _base_fn + "-" + exec_time + ".dat";
-    _data_log = make_unique<Recorder>(RecorderInterface::RecordType::FILE, data_fn);
+    std::string data_fn = _base_fn + "-" + exec_time + ".dat";
+    _data_log = std::make_unique<Recorder>(RecorderInterface::RecordType::FILE, data_fn);
     if (!_data_log->is_active()) {
         LOG_ERR("Error! Unable to open output data log file (%s).", data_fn.c_str());
         _active = false;
@@ -405,13 +402,13 @@ Trackball::Trackball(string cfg_fn)
     int sock_port = SOCK_PORT_DEFAULT;
     _do_sock_output = false;
     if (_cfg.getInt("sock_port", sock_port) && (sock_port > 0)) {
-        string sock_host = SOCK_HOST_DEFAULT;
+        std::string sock_host = SOCK_HOST_DEFAULT;
         if (!_cfg.getStr("sock_host", sock_host)) {
             LOG_WRN("Warning! Using default value for sock_host (%s).", sock_host.c_str());
             _cfg.add("sock_host", sock_host);
         }
 
-        _data_sock = make_unique<Recorder>(RecorderInterface::RecordType::SOCK, sock_host + ":" + std::to_string(sock_port));
+        _data_sock = std::make_unique<Recorder>(RecorderInterface::RecordType::SOCK, sock_host + ":" + std::to_string(sock_port));
         if (!_data_sock->is_active()) {
             LOG_ERR("Error! Unable to open output data socket (%s:%d).", sock_host.c_str() ,sock_port);
             _active = false;
@@ -420,7 +417,7 @@ Trackball::Trackball(string cfg_fn)
         _do_sock_output = true;
     }
 
-    string com_port = _cfg("com_port");
+    std::string com_port = _cfg("com_port");
     _do_com_output = false;
     if (com_port.length() > 0) {
         int com_baud = COM_BAUD_DEFAULT;
@@ -429,7 +426,7 @@ Trackball::Trackball(string cfg_fn)
             _cfg.add("com_baud", com_baud);
         }
 
-        _data_com = make_unique<Recorder>(RecorderInterface::RecordType::COM, com_port + "@" + std::to_string(com_baud));
+        _data_com = std::make_unique<Recorder>(RecorderInterface::RecordType::COM, com_port + "@" + std::to_string(com_baud));
         if (!_data_com->is_active()) {
             LOG_ERR("Error! Unable to open output data com port (%s@%d).", com_port.c_str(), com_baud);
             _active = false;
@@ -444,10 +441,13 @@ Trackball::Trackball(string cfg_fn)
         _cfg.add("do_shmem", _do_shmem_output ? "y" : "n");
    
     if (_do_shmem_output) {
-        auto shared_memory_data = setupSHMEMRegion<SHMEMTransferData>("FicTracStateSHMEM");
+        // Setup a shared memory region for outputing fictrac state
+        LOG("Setting up a shared memory region (FicTracStateSHMEM) for state output");
+        _shmem_data = std::make_shared<SHMEMRegion<SHMEMTransferData>>("FicTracStateSHMEM");
         
         // Also setup a shared memory variable that allows signalling to close the program. 
-        auto shared_memory_signal = setupSHMEMRegion<SHMEMSignalData>("FicTracStateSHMEM_SIGNALS");
+        LOG("Setting up a shared memory region (FicTracStateSHMEM_SIGNALS) for control");
+        _shmem_signal = std::make_shared<SHMEMRegion<SHMEMSignalData>>("FicTracStateSHMEM_SIGNALS");
     }
 
 
@@ -480,7 +480,7 @@ Trackball::Trackball(string cfg_fn)
     if (_save_raw || _save_debug) {
         // find codec
         int fourcc = 0;
-        string cstr = _cfg("vid_codec"), fext;
+        std::string cstr = _cfg("vid_codec"), fext;
         for (auto codec : CODECS) {
             if (cstr.compare(codec[0]) == 0) {  // found the codec
                 if (cstr.compare("raw") != 0) { // codec isn't RAW
@@ -503,7 +503,7 @@ Trackball::Trackball(string cfg_fn)
 
         // raw input video
         if (_save_raw) {
-            string vid_fn = _base_fn + "-raw-" + exec_time + "." + fext;
+            std::string vid_fn = _base_fn + "-raw-" + exec_time + "." + fext;
             double fps = source->getFPS();
             if (fps <= 0) {
                 fps = (src_fps > 0) ? src_fps : 25;   // if we can't get fps from source, then use fps from config or - if not specified - default to 25 fps.
@@ -519,7 +519,7 @@ Trackball::Trackball(string cfg_fn)
 
         // debug output video
         if (_save_debug) {
-            string vid_fn = _base_fn + "-dbg-" + exec_time + "." + fext;
+            std::string vid_fn = _base_fn + "-dbg-" + exec_time + "." + fext;
             double fps = source->getFPS();
             if (fps <= 0) {
                 fps = (src_fps > 0) ? src_fps : 25;   // if we can't get fps from source, then use fps from config or - if not specified - default to 25 fps.
@@ -534,8 +534,8 @@ Trackball::Trackball(string cfg_fn)
         }
 
         // create output file containing log lines corresponding to video frames, for synching video output
-        string fn = _base_fn + "-vidLogFrames-" + exec_time + ".txt";
-        _vid_frames = make_unique<Recorder>(RecorderInterface::RecordType::FILE, fn);
+        std::string fn = _base_fn + "-vidLogFrames-" + exec_time + ".txt";
+        _vid_frames = std::make_unique<Recorder>(RecorderInterface::RecordType::FILE, fn);
         if (!_vid_frames->is_active()) {
             LOG_ERR("Error! Unable to open output video frame number log file (%s).", fn.c_str());
             _active = false;
@@ -544,7 +544,7 @@ Trackball::Trackball(string cfg_fn)
     }
 
     /// Frame source.
-    _frameGrabber = make_unique<FrameGrabber>(
+    _frameGrabber = std::make_unique<FrameGrabber>(
         source,
         remapper,
         _roi_mask,
@@ -569,10 +569,10 @@ Trackball::Trackball(string cfg_fn)
     _active = true;
 
     if (_do_display) {
-        _drawThread = make_unique<std::thread>(&Trackball::processDrawQ, this);
+        _drawThread = std::make_unique<std::thread>(&Trackball::processDrawQ, this);
     }
     // main processing thread
-    _thread = make_unique<std::thread>(&Trackball::process, this);
+    _thread = std::make_unique<std::thread>(&Trackball::process, this);
 }
 
 ///
@@ -693,7 +693,7 @@ void Trackball::process()
         }
 
         if (_do_display) {
-            auto data = make_shared<DrawData>();
+            auto data = std::make_shared<DrawData>();
             data->log_frame = _data.cnt;
             data->src_frame = _src_frame.clone();
             data->roi_frame = _roi_frame.clone();
@@ -737,6 +737,13 @@ void Trackball::process()
 
         t0 = ts_ms();
         if (tfirst < 0) { tfirst = t0; }
+
+        // Check if the program has received close signal from having a special shared memory value set
+        if (_shmem_signal->data->close == 1) {
+            LOG("Received close signal from special shared memory variable. Shutting down.\n");
+            _active = false;
+        }
+
     }
     tlast = t0;
 
@@ -1043,14 +1050,8 @@ bool Trackball::logData()
     if (_do_shmem_output) {
         
         // Copy the tracking data to shared memory for other processes that want it
-        if (shared_memory_data != NULL)
-            fillSHMEMData(shared_memory_data, _data.cnt, _data.dr_cam, _err, _data.dr_lab, _data.r_cam, _data.r_lab, _data.posx, _data.posy, _data.heading, _data.step_dir, _data.step_mag, _data.intx, _data.inty, _data.ts, _data.seq);
+        fillSHMEMData(*_shmem_data.get(), _data.cnt, _data.dr_cam, _err, _data.dr_lab, _data.r_cam, _data.r_lab, _data.posx, _data.posy, _data.heading, _data.step_dir, _data.step_mag, _data.intx, _data.inty, _data.ts, _data.seq);
 
-        // While were at it, check if the program has received close signal from having a special shared memory value set
-        if (shared_memory_signal->close == 1) {
-            printf("Received close signal from special shared memory variable. Shutting down.\n");
-            ACTIVE = false;
-        }
     }
 
     ret &= _data_log->addMsg(ss.str());
@@ -1209,10 +1210,10 @@ void makeSphereRotMaps(
 ///
 ///
 ///
-bool Trackball::updateCanvasAsync(shared_ptr<DrawData> data)
+bool Trackball::updateCanvasAsync(std::shared_ptr<DrawData> data)
 {
     bool ret = false;
-    lock_guard<mutex> l(_drawMutex);
+    std::lock_guard<std::mutex> l(_drawMutex);
     if (_active) {
         _drawQ.push_back(data);
         _drawCond.notify_all();
@@ -1232,7 +1233,7 @@ void Trackball::processDrawQ()
     }
 
     /// Get a un/lockable lock.
-    unique_lock<mutex> l(_drawMutex);
+    std::unique_lock<std::mutex> l(_drawMutex);
 
     /// Process drawing queue.
     while (_active) {
@@ -1267,7 +1268,7 @@ void Trackball::processDrawQ()
 ///
 ///
 ///
-void Trackball::drawCanvas(shared_ptr<DrawData> data)
+void Trackball::drawCanvas(std::shared_ptr<DrawData> data)
 {
     static Mat canvas(3 * DRAW_CELL_DIM, 4 * DRAW_CELL_DIM, CV_8UC3);
     canvas.setTo(Scalar::all(0));
@@ -1279,8 +1280,8 @@ void Trackball::drawCanvas(shared_ptr<DrawData> data)
     Mat& R_roi = data->R_roi;
     Mat& sphere_view = data->sphere_view;
     Mat& sphere_map = data->sphere_map;
-    deque<Mat>& R_roi_hist = data->R_roi_hist;
-    deque<CmPoint64f>& pos_heading_hist = data->pos_heading_hist;
+    std::deque<Mat>& R_roi_hist = data->R_roi_hist;
+    std::deque<CmPoint64f>& pos_heading_hist = data->pos_heading_hist;
     unsigned int log_frame = data->log_frame;
 
     /// Draw source image.
@@ -1431,10 +1432,10 @@ void Trackball::drawCanvas(shared_ptr<DrawData> data)
         CV_RGB(255, 255, 255), 2, cv::LINE_AA, 4);
 
     /// Draw text (with shadow).
-    shadowText(canvas, string("Processed ") + dateString(),
+    shadowText(canvas, std::string("Processed ") + dateString(),
         2, 15,
         255, 255, 0);
-    shadowText(canvas, string("FicTrac (") + string(__DATE__) + string(")"),
+    shadowText(canvas, std::string("FicTrac (") + std::string(__DATE__) + std::string(")"),
         canvas.cols - 184, 15,
         255, 255, 0);
     shadowText(canvas, "input image",
@@ -1475,16 +1476,16 @@ void Trackball::drawCanvas(shared_ptr<DrawData> data)
         _debug_vid.write(canvas);
     }
     if (_save_raw || _save_debug) {
-        _vid_frames->addMsg(to_string(log_frame) + "\n");
+        _vid_frames->addMsg(std::to_string(log_frame) + "\n");
     }
 }
 
 ///
 ///
 ///
-shared_ptr<Trackball::DATA> Trackball::getState()
+std::shared_ptr<Trackball::DATA> Trackball::getState()
 {
-    return make_shared<DATA>(_data);
+    return std::make_shared<DATA>(_data);
 }
 
 ///
@@ -1511,7 +1512,7 @@ bool Trackball::writeTemplate(std::string fn)
 {
     if (!_init) { return false; }
     
-    string template_fn = _base_fn + "-template.png";
+    std::string template_fn = _base_fn + "-template.png";
 
     bool ret = cv::imwrite(template_fn, _sphere_map);
     if (!ret) {

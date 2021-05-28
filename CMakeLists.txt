@@ -1,6 +1,8 @@
 cmake_minimum_required (VERSION 3.0)
 project (FicTrac)
 
+set (CMAKE_CXX_STANDARD 11)
+
 # The version number.
 set(FICTRAC_VERSION_MAJOR 2)
 set(FICTRAC_VERSION_MIDDLE 1)

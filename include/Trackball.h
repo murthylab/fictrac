@@ -13,6 +13,9 @@
 #include "FrameGrabber.h"
 #include "ConfigParser.h"
 
+// Stuff for shared memory output and control
+#include "SharedMemTransferData.h"
+
 /// OpenCV individual includes required by gcc?
 #include <opencv2/highgui.hpp>
 #include <opencv2/imgproc.hpp>  
@@ -181,4 +184,8 @@ private:
     /// Thread stuff.
     std::atomic_bool _active, _kill, _do_reset;
     std::unique_ptr<std::thread> _thread;
+
+
+    std::shared_ptr<SHMEMRegion<SHMEMTransferData>> _shmem_data;
+    std::shared_ptr<SHMEMRegion<SHMEMSignalData>> _shmem_signal;
 };
