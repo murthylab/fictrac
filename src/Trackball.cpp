@@ -739,7 +739,7 @@ void Trackball::process()
         if (tfirst < 0) { tfirst = t0; }
 
         // Check if the program has received close signal from having a special shared memory value set
-        if (_shmem_signal->data->close == 1) {
+        if (_do_shmem_output && _shmem_signal->data->close == 1) {
             LOG("Received close signal from special shared memory variable. Shutting down.\n");
             _active = false;
         }
