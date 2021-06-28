@@ -5,8 +5,8 @@
 # https://docs.microsoft.com/en-us/azure/devops/pipelines/build/triggers?view=azure-devops&tabs=yaml
 
 trigger:
-#- master
-- develop
+- master
+#- develop
 
 # We can run multiple jobs in parallel.
 # see https://docs.microsoft.com/en-us/azure/devops/pipelines/process/phases

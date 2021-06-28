@@ -1,6 +1,4 @@
-<div align="left">
-  <img src="http://rjdmoore.net/fictrac/header_text.jpg"><br><br>
-</div>
+![FicTrac: The webcam-based method for tracking spherical motion and generating fictive animal paths](https://user-images.githubusercontent.com/3844483/110451048-176e9300-80c4-11eb-8e1e-e96545d7d2ed.jpg)
 
 **FicTrac** is an open-source software library for reconstructing the fictive path of an animal walking on a patterned sphere. The software is fast, flexible, easy to use, and simplifies the setup of closed-loop tracking experiments.
 
@@ -53,7 +51,7 @@ The FicTrac source code can be built for both Windows and Linux (e.g. Ubuntu) op
     2. Linux only:
         1. Run the following from terminal to install necessary build tools and dependencies:
         ```
-        [Linux] sudo apt-get install gcc g++ git cmake curl unzip tar yasm pkg-config libgtk2.0-dev libavformat-dev libavcodec-dev libavresample-dev libswscale-dev libopencv-dev
+        sudo apt-get install gcc g++ git cmake curl unzip tar yasm pkg-config libgtk2.0-dev libavformat-dev libavcodec-dev libavresample-dev libswscale-dev libopencv-dev
         ```
     3. (Windows and Linux) Clone or download the [Vcpkg](https://github.com/Microsoft/vcpkg) repository and then follow the guide to install (make sure to perform the bootstrap and integration steps).
     4. Using Vcpkg, install remaining dependencies:
@@ -125,7 +123,7 @@ Before running FicTrac, you may configure your camera (frame rate, resolution, e
   <summary>Basler Pylon SDK</summary>
 
 1. Download and install the latest [Pylon SDK](https://www.baslerweb.com/en/products/software/basler-pylon-camera-software-suite/).
-2. When preparing the build files for FicTrac using Cmake, you will need to specify to use Pylon using the switch `-D PGR_USB3=ON` and depending on where you installed the SDK, you may also need to provide the SDK directory path using the switch `-D BASLER_DIR=...`. For example, for a Windows installation you would replace step 3 above with (replacing <vcpkg_root> with the path to your vcpkg root directory):
+2. When preparing the build files for FicTrac using Cmake, you will need to specify to use Pylon using the switch `-D BASLER_USB3=ON` and depending on where you installed the SDK, you may also need to provide the SDK directory path using the switch `-D BASLER_DIR=...`. For example, for a Windows installation you would replace step 3 above with (replacing <vcpkg_root> with the path to your vcpkg root directory):
 ```
 cmake -A x64 -D CMAKE_TOOLCHAIN_FILE=<vcpkg root>/scripts/buildsystems/vcpkg.cmake -D BASLER_USB3=ON -D BASLER_DIR="C:\path\to\Pylon" ..
 ```
