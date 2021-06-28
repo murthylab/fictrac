@@ -4,8 +4,6 @@
 /// \author     Richard Moore
 /// \copyright  CC BY-NC-SA 3.0
 
-//TODO: check config.is_open()
-//TODO: Add support for fisheye camera model.
 //TODO: Add support for edge clicks rather than square corner clicks.
 
 #include "ConfigGui.h"
@@ -18,9 +16,9 @@
 #include "timing.h"
 #include "misc.h"
 #include "CVSource.h"
-#ifdef PGR_USB3
+#if defined(PGR_USB2) || defined(PGR_USB3)
 #include "PGRSource.h"
-#endif // PGR_USB3
+#endif // PGR_USB2/3
 
 /// OpenCV individual includes required by gcc?
 #include <opencv2/highgui.hpp>
@@ -43,6 +41,7 @@ using std::string;
 ///
 const int       ZOOM_DIM    = 600;
 const double    ZOOM_SCL    = 1.0 / 10.0;
+const int       MAX_DISP_DIM    = -1;
 
 const int NCOLOURS = 6;
 cv::Scalar COLOURS[NCOLOURS] = {
@@ -60,6 +59,10 @@ cv::Scalar COLOURS[NCOLOURS] = {
 void onMouseEvent(int event, int x, int y, int f, void* ptr)
 {
     ConfigGui::INPUT_DATA* pdata = static_cast<ConfigGui::INPUT_DATA*>(ptr);
+    if (pdata->ptScl > 0) {
+        x = round(x * pdata->ptScl);
+        y = round(y * pdata->ptScl);
+    }
     switch(event)
     {
         case cv::EVENT_LBUTTONDOWN:
@@ -141,7 +144,7 @@ void createZoomROI(Mat& zoom_roi, const Mat& frame, const Point2d& pt, int orig_
     int x = frame.cols/2;
     if (pt.x >= 0) { x = clamp(int(pt.x - orig_dim/2 + 0.5), int(orig_dim/2), frame.cols - 1 - orig_dim); }
     int y = frame.rows/2;
-    if (pt.y >= 0) { y = clamp(int(pt.y - orig_dim/2 + 0.5), int(orig_dim/2), frame.rows - 1 - orig_dim); }
+    if (pt.y >= 0) { y = clamp(int(pt.y - orig_dim/2 + 0.5), 0, frame.rows - 1 - orig_dim); }
     Mat crop_rect = frame(cv::Rect(x, y, orig_dim, orig_dim));
     cv::resize(crop_rect, zoom_roi, zoom_roi.size());
 }
@@ -150,61 +153,77 @@ void createZoomROI(Mat& zoom_roi, const Mat& frame, const Point2d& pt, int orig_
 /// Constructor.
 ///
 ConfigGui::ConfigGui(string config_fn)
-: _open(false), _config_fn(config_fn)
+: _config_fn(config_fn)
 {
     /// Load and parse config file.
-    _open = (_cfg.read(_config_fn) > 0);
-
-    /// Read source file name and load image.
-    string input_fn;
-    if (_open) {
-        input_fn = _cfg("src_fn");
-        if (input_fn.empty()) {
-            _open = false;
-        }
+    if (_cfg.read(_config_fn) <= 0) {
+        LOG_ERR("Error! Could not read from config file (%s).", _config_fn.c_str());
+        return;
     }
 
-    /// Load an image to use for annotation.
-    Mat input_frame;
-    std::shared_ptr<FrameSource> source;
-    if (_open) {
-#ifdef PGR_USB3
-        try {
-            // first try reading input as camera id
-            int id = std::stoi(input_fn);
-            source = std::make_shared<PGRSource>(id);
-        }
-        catch (...) {
-            // then try loading as video file
-            source = std::make_shared<CVSource>(input_fn);
-        }
-#else // PGR_USB3
-        source = std::make_shared<CVSource>(input_fn);
-#endif // PGR_USB3
-        if (!source->isOpen()) {
-            LOG_ERR("Error! Could not open input frame source (%s)!", input_fn.c_str());
-            _open = false;
-        } else if (!source->grab(input_frame)) {
-            LOG_ERR("Could not read frame from input (%s)!", input_fn.c_str());
-            _open = false;
-        } else if (input_frame.empty()) {
-            _open = false;
-        }
+    /// Read source file name.
+    string input_fn = _cfg("src_fn");
+    if (input_fn.empty()) {
+        LOG_ERR("Error! No src_fn defined in config file.");
+        return;
+    }
+
+    /// Open the image source.
+#if defined(PGR_USB2) || defined(PGR_USB3)
+    try {
+        if (input_fn.size() > 2) { throw std::exception(); }
+        // first try reading input as camera id
+        int id = std::stoi(input_fn);
+        _source = std::make_shared<PGRSource>(id);
+    }
+    catch (...) {
+        // then try loading as video file
+        _source = std::make_shared<CVSource>(input_fn);
+    }
+#else // !PGR_USB2/3
+    _source = std::make_shared<CVSource>(input_fn);
+#endif // PGR_USB2/3
+    if (!_source || !_source->isOpen()) {
+        LOG_ERR("Error! Could not open input frame source (%s)!", input_fn.c_str());
+        return;
+    }
+
+    /// Load the source camera model.
+    _w = _source->getWidth();
+    _h = _source->getHeight();
+    _disp_scl = -1;
+    if ((MAX_DISP_DIM > 0) && (std::max(_w,_h) > MAX_DISP_DIM)) {
+        _disp_scl = MAX_DISP_DIM / static_cast<float>(std::max(_w,_h));
+        _input_data.ptScl = 1.0 / _disp_scl;
+    }
+
+    double vfov = 0;
+    _cfg.getDbl("vfov", vfov);
+
+    if (vfov <= 0) {
+        LOG_ERR("Error! vfov parameter must be > 0 (%f)", vfov);
+        return;
+    }
+
+    LOG("Using vfov: %f deg", vfov);
+
+    bool fisheye = false;
+    if (_cfg.getBool("fisheye", fisheye) && fisheye) {
+        _cam_model = CameraModel::createFisheye(_w, _h, vfov * CM_D2R / (double)_h, 360 * CM_D2R);
+    }
+    else {
+        // default to rectilinear
+        _cam_model = CameraModel::createRectilinear(_w, _h, vfov * CM_D2R);
     }
 
     /// Create base file name for output files.
     _base_fn = _cfg("output_fn");
     if (_base_fn.empty()) {
-        if (_open && !source->isLive()) {
-            _base_fn = input_fn.substr(0, input_fn.length() - 4);
-        } else {
+        if (_source->isLive()) {
             _base_fn = "fictrac";
+        } else {
+            _base_fn = input_fn.substr(0, input_fn.length() - 4);
         }
-    }
-
-    /// Setup.
-    if (_open) {
-        _open = setFrame(input_frame);
     }
 }
 
@@ -215,66 +234,11 @@ ConfigGui::~ConfigGui()
 {}
 
 ///
-/// Prepare input image for user input.
-///
-bool ConfigGui::setFrame(Mat& frame)
-{
-    /// Copy input frame.
-    if (frame.channels() == 3) {
-        //cv::cvtColor(frame, _frame, CV_BGR2GRAY);
-        _frame = frame.clone();
-    } else if (frame.channels() == 1) {
-        //_frame = frame.clone();
-        cv::cvtColor(frame, _frame, CV_GRAY2BGR);
-    } else {
-        // uh oh, shouldn't get here
-        LOG_ERR("Unexpected number of image channels (%d)!", frame.channels());
-        return false;
-    }
-    
-    /// Stretch contrast for display
-    //histStretch(_frame);
-    _w = _frame.cols;
-    _h = _frame.rows;
-    
-    /// Load camera model.
-    double vfov = 0;
-    _cfg.getDbl("vfov", vfov);
-
-	if (vfov <= 0) {
-		LOG_ERR("vfov parameter must be > 0 (%f)!", vfov);
-		return false;
-	}
-
-    LOG("Using vfov: %f deg", vfov);
-    
-    //FIXME: support also fisheye models!
-    _cam_model = CameraModel::createRectilinear(static_cast<int>(_w), static_cast<int>(_h), vfov * CM_D2R);
-    
-    return true;
-}
-
-///
 /// Write camera-animal transform to config file.
+/// Warning: input R+t is animal to camera frame transform!
 ///
-bool ConfigGui::saveC2ATransform(const Mat& R, const Mat& t)
+bool ConfigGui::saveC2ATransform(const string& ref_str, const Mat& R, const Mat& t)
 {
-	string sqr_type = "";
-	switch (_input_data.mode) {
-		case R_XY:
-			sqr_type = "c2a_cnrs_xy";
-			break;
-		case R_YZ:
-			sqr_type = "c2a_cnrs_yz";
-			break;
-		case R_XZ:
-			sqr_type = "c2a_cnrs_xz";
-			break;
-        default:
-            LOG_ERR("Uh oh, something went wrong :-(");
-            return false;
-	}
-
 	// dump corner points to config file
 	vector<int> cfg_pts;
 	for (auto p : _input_data.sqrPts) {
@@ -283,13 +247,13 @@ bool ConfigGui::saveC2ATransform(const Mat& R, const Mat& t)
 	}
 
 	// write to config file
-	LOG("Adding c2a_src and %s to config file and writing to disk (%s) ..", sqr_type.c_str(), _config_fn.c_str());
-    _cfg.add("c2a_src", sqr_type);
-    _cfg.add(sqr_type, cfg_pts);
+	LOG("Adding c2a_src and %s to config file and writing to disk (%s) ..", ref_str.c_str(), _config_fn.c_str());
+    _cfg.add("c2a_src", ref_str);
+    _cfg.add(ref_str, cfg_pts);
 
 	// dump R to config file
 	vector<double> cfg_r, cfg_t;
-	CmPoint angleAxis = CmPoint64f::matrixToOmega(R);
+	CmPoint angleAxis = CmPoint64f::matrixToOmega(R.t());   // transpose to get camera-animal transform
 	for (int i = 0; i < 3; i++) {
 		cfg_r.push_back(angleAxis[i]);
 		cfg_t.push_back(t.at<double>(i, 0));
@@ -320,21 +284,25 @@ bool ConfigGui::saveC2ATransform(const Mat& R, const Mat& t)
 ///
 /// Update animal coordinate frame estimate.
 ///
-bool ConfigGui::updateC2ATransform(const Mat& ref_cnrs, Mat& R, Mat& t)
+bool ConfigGui::updateRt(const string& ref_str, Mat& R, Mat& t)
 {
-	bool ret = false;
-	if (_input_data.newEvent) {
-        //FIXME: also support edge clicks! e.g.:
-        //  double x1 = click[2 * i + 0].x;     double y1 = click[2 * i + 0].y;
-        //  double x2 = click[2 * i + 1].x;     double y2 = click[2 * i + 1].y;
-        //  double x3 = click[2 * i + 2].x;     double y3 = click[2 * i + 2].y;
-        //  double x4 = click[2 * i + 3].x;     double y4 = click[2 * i + 3].y;
-        //  double px = ((x1*y2 - y1 * x2)*(x3 - x4) - (x1 - x2)*(x3*y4 - y3 * x4)) / ((x1 - x2)*(y3 - y4) - (y1 - y2)*(x3 - x4));
-        //  double py = ((x1*y2 - y1 * x2)*(y3 - y4) - (y1 - y2)*(x3*y4 - y3 * x4)) / ((x1 - x2)*(y3 - y4) - (y1 - y2)*(x3 - x4));
-		ret = computeRtFromSquare(_cam_model, ref_cnrs, _input_data.sqrPts, R, t);
-		_input_data.newEvent = false;
-	}
-	return ret;
+    //FIXME: also support edge clicks! e.g.:
+    //  double x1 = click[2 * i + 0].x;     double y1 = click[2 * i + 0].y;
+    //  double x2 = click[2 * i + 1].x;     double y2 = click[2 * i + 1].y;
+    //  double x3 = click[2 * i + 2].x;     double y3 = click[2 * i + 2].y;
+    //  double x4 = click[2 * i + 3].x;     double y4 = click[2 * i + 3].y;
+    //  double px = ((x1*y2 - y1 * x2)*(x3 - x4) - (x1 - x2)*(x3*y4 - y3 * x4)) / ((x1 - x2)*(y3 - y4) - (y1 - y2)*(x3 - x4));
+    //  double py = ((x1*y2 - y1 * x2)*(y3 - y4) - (y1 - y2)*(x3*y4 - y3 * x4)) / ((x1 - x2)*(y3 - y4) - (y1 - y2)*(x3 - x4));
+
+    bool ret = false;
+    if (ref_str == "c2a_cnrs_xy") {
+        ret = computeRtFromSquare(_cam_model, XY_CNRS, _input_data.sqrPts, R, t);
+    } else if (ref_str == "c2a_cnrs_yz") {
+        ret = computeRtFromSquare(_cam_model, YZ_CNRS, _input_data.sqrPts, R, t);
+    } else if (ref_str == "c2a_cnrs_xz") {
+        ret = computeRtFromSquare(_cam_model, XZ_CNRS, _input_data.sqrPts, R, t);
+    }
+    return ret;
 }
 
 /////
@@ -363,11 +331,22 @@ bool ConfigGui::updateC2ATransform(const Mat& ref_cnrs, Mat& R, Mat& t)
 ///
 ///
 ///
-void ConfigGui::drawC2ACorners(Mat& disp_frame, const Mat& ref_cnrs, const Mat& R, const Mat& t)
+void ConfigGui::drawC2ACorners(Mat& disp_frame, const string& ref_str, const Mat& R, const Mat& t)
 {
     // make x4 mat for projecting corners
     Mat T(3, 4, CV_64F);
     for (int i = 0; i < 4; i++) { t.copyTo(T.col(i)); }
+
+    Mat ref_cnrs;
+    if (ref_str == "c2a_cnrs_xy") {
+        ref_cnrs = XY_CNRS;
+    } else if (ref_str == "c2a_cnrs_yz") {
+        ref_cnrs = YZ_CNRS;
+    } else if (ref_str == "c2a_cnrs_xz") {
+        ref_cnrs = XZ_CNRS;
+    } else {
+        return;
+    }
 
     // project reference corners
     Mat p = R * ref_cnrs + T;
@@ -386,6 +365,7 @@ void ConfigGui::drawC2AAxes(Mat& disp_frame, const Mat& R, const Mat& t, const d
         double scale = 1.0 / tan(r);
         Mat so = (cv::Mat_<double>(3, 1) << c.x, c.y, c.z) * scale;
         drawAxes(disp_frame, _cam_model, R, so, Scalar(0, 0, 255));
+        drawAnimalAxis(disp_frame, _cam_model, R, so, r, Scalar(255, 0, 0));
     }
 }
 
@@ -400,13 +380,70 @@ void ConfigGui::changeState(INPUT_MODE new_state)
 }
 
 ///
+///
+///
+bool ConfigGui::is_open()
+{
+    return _source && _source->isOpen();
+}
+
+///
 /// Run user input program or configuration.
 ///
 bool ConfigGui::run()
 {
+    if (!is_open()) { return false; }
+
     /// Interactive window.
     cv::namedWindow("configGUI", cv::WINDOW_AUTOSIZE);
     cv::setMouseCallback("configGUI", onMouseEvent, &_input_data);
+
+    /// If reconfiguring, then delete pre-computed values.
+    bool reconfig = false;
+    _cfg.getBool("reconfig", reconfig);
+
+    /// Get a frame.
+    Mat frame;
+    if (!_source->grab(frame)) {
+        LOG_ERR("Error! Could not grab input frame.");
+        return false;
+    }
+    if ((frame.cols != _w) || (frame.rows != _h)) {
+        LOG_ERR("Error! Unexpected image size (%dx%d).", frame.cols, frame.rows);
+        return false;
+    }
+
+    // convert to RGB
+    if (frame.channels() == 1) {
+        cv::cvtColor(frame, frame, cv::COLOR_GRAY2BGR);
+    }
+
+    /// Optionally enhance frame for config
+    bool do_enhance = false;
+    _cfg.getBool("enh_cfg_disp", do_enhance);
+    if (do_enhance) {
+        LOG("Enhancing config image ..");
+        Mat maximg = frame.clone();
+        Mat minimg = frame.clone();
+        auto t0 = elapsed_secs();
+        while (_source->grab(frame)) {
+            for (int i = 0; i < _h; i++) {
+                uint8_t* pmin = minimg.ptr(i);
+                uint8_t* pmax = maximg.ptr(i);
+                const uint8_t* pimg = frame.ptr(i);
+                for (int j = 0; j < _w * 3; j++) {
+                    uint8_t p = pimg[j];
+                    if (p > pmax[j]) { pmax[j] = p; }
+                    if (p < pmin[j]) { pmin[j] = p; }
+                }
+            }
+
+            // Drop out after max 30s (avoid infinite loop when running live)
+            auto t1 = elapsed_secs();
+            if ((t1 - t0) > 30) { break; }
+        }
+        frame = maximg - minimg;
+    }
     
     /// Display/input loop.
 	Mat R, t;
@@ -414,24 +451,26 @@ bool ConfigGui::run()
     double r = -1;
     char key = 0;
     string val;
-	string cfg_r_src;
+	string c2a_src;
     vector<int> cfg_pts;
     vector<double> cfg_vec;
     vector<vector<int>> cfg_polys;
 	changeState(CIRC_INIT);
-    const char exit_key = 0x1b;
-#ifdef WIN32
-    const char enter_key = 0x0d;
-#else // WIN32
-    const char enter_key = 0x0a;
-#endif // WIN32
     const int click_rad = std::max(int(_w/150+0.5), 5);
     Mat disp_frame, zoom_frame(ZOOM_DIM, ZOOM_DIM, CV_8UC3);
     const int scaled_zoom_dim = static_cast<int>(ZOOM_DIM * ZOOM_SCL + 0.5);
-    while (_open && (key != exit_key)) {
+    bool open = true;
+    while (open && (key != 0x1b)) {    // esc
         /// Create frame for drawing.
         //cv::cvtColor(_frame, disp_frame, CV_GRAY2RGB);
-        disp_frame = _frame.clone();
+        disp_frame = frame.clone();
+
+        // normalise displayed image
+        {
+            double min, max;
+            cv::minMaxLoc(disp_frame, &min, &max);
+            disp_frame = (disp_frame - min) * 255 / (max - min);
+        }
         
         int in;
         string str;
@@ -442,10 +481,10 @@ bool ConfigGui::run()
             
                 // test read
                 cfg_pts.clear();
-                if (_cfg.getVecDbl("roi_c", cfg_vec) && _cfg.getDbl("roi_r", r)) {
+                if (!reconfig && _cfg.getVecDbl("roi_c", cfg_vec) && _cfg.getDbl("roi_r", r)) {
                     c.copy(cfg_vec.data());
                     LOG_DBG("Found roi_c = [%f %f %f] and roi_r = %f rad.", c[0], c[1], c[2], r);
-                    LOG_WRN("Warning! When roi_c and roi_r are specified in the config file, roi_circ will be ignored.\nTo re-compute roi_c and roi_r, please delete these values from the config file and reconfigure.");
+                    LOG_WRN("Warning! When roi_c and roi_r are specified in the config file, roi_circ will be ignored.\nTo re-compute roi_c and roi_r, please delete these values or set reconfig : y in the config file and reconfigure.");
                 } 
                 else if (_cfg.getVecInt("roi_circ", cfg_pts)) {
 
@@ -457,9 +496,25 @@ bool ConfigGui::run()
 
                     /// Fit circular FoV to sphere.
                     if (_input_data.circPts.size() >= 3) {
-                        circleFit_camModel(_input_data.circPts, _cam_model, c, r);
+                        if (circleFit_camModel(_input_data.circPts, _cam_model, c, r)) {
 
-                        LOG_DBG("Computed roi_c = [%f %f %f] and roi_r = %f rad from %d roi_circ points.", c[0], c[1], c[2], r, _input_data.circPts.size());
+                            LOG_DBG("Computed roi_c = [%f %f %f] and roi_r = %f rad from %d roi_circ points.", c[0], c[1], c[2], r, _input_data.circPts.size());
+
+                            // save re-computed values
+                            cfg_vec.clear();
+                            cfg_vec.push_back(c[0]);
+                            cfg_vec.push_back(c[1]);
+                            cfg_vec.push_back(c[2]);
+
+                            // write to config file
+                            LOG("Adding roi_c and roi_r to config file and writing to disk (%s) ..", _config_fn.c_str());
+                            _cfg.add("roi_c", cfg_vec);
+                            _cfg.add("roi_r", r);
+                            if (_cfg.write() <= 0) {
+                                LOG_ERR("Error writing to config file (%s)!", _config_fn.c_str());
+                                open = false;  // will cause exit
+                            }
+                        }
                     }
                 }
                 else {
@@ -470,8 +525,11 @@ bool ConfigGui::run()
                 /// Draw fitted circumference.
                 if (r > 0) {
                     drawCircle_camModel(disp_frame, _cam_model, c, r, Scalar(255,0,0), false);
-                            
+        
                     /// Display.
+                    if (_disp_scl > 0) {
+                        cv::resize(disp_frame, disp_frame, cv::Size(), _disp_scl, _disp_scl);
+                    }
                     cv::imshow("configGUI", disp_frame);
                     cv::waitKey(100);   //FIXME: why do we have to wait so long to make sure the frame is drawn?
                             
@@ -480,7 +538,7 @@ bool ConfigGui::run()
                     // input loop
                     while (true) {
                         cv::waitKey(100);   //FIXME: dirty hack - sometimes image doesn't draw, at least with this line we can just mash keys until it does
-                        printf("\n  Would you like to keep the existing spherer ROI configuration ([y]/n)? ");
+                        printf("\n  Would you like to keep the existing sphere ROI configuration ([y]/n)? ");
                         in = getchar();
                         switch (in)
                         {
@@ -527,7 +585,7 @@ bool ConfigGui::run()
                 
                 /// Draw previous clicks.
                 for (auto click : _input_data.circPts) {
-                    cv::circle(disp_frame, click, click_rad, Scalar(255,255,0), 1, CV_AA);
+                    cv::circle(disp_frame, click, click_rad, Scalar(255,255,0), 1, cv::LINE_AA);
                 }
                 
                 /// Draw fitted circumference.
@@ -541,11 +599,14 @@ bool ConfigGui::run()
                 
                 /// Display.
                 cv::imshow("zoomROI", zoom_frame);
+                if (_disp_scl > 0) {
+                    cv::resize(disp_frame, disp_frame, cv::Size(), _disp_scl, _disp_scl);
+                }
                 cv::imshow("configGUI", disp_frame);
                 key = cv::waitKey(5);
                 
                 /// State machine logic.
-                if (key == enter_key) {
+                if ((key == 0x0d) || (key == 0x0a)) {   // return
                     if (_input_data.circPts.size() >= 3) {
                         // dump circumference points, c, and r to config file
                         cfg_pts.clear();
@@ -566,7 +627,7 @@ bool ConfigGui::run()
                         _cfg.add("roi_r", r);
                         if (_cfg.write() <= 0) {
                             LOG_ERR("Error writing to config file (%s)!", _config_fn.c_str());
-                            _open = false;  // will cause exit
+                            open = false;  // will cause exit
                         }
                         
                         //// test read
@@ -604,13 +665,16 @@ bool ConfigGui::run()
                     for (unsigned int i = 0; i < _input_data.ignrPts.size(); i++) {
                         for (unsigned int j = 0; j < _input_data.ignrPts[i].size(); j++) {
                             if (i == _input_data.ignrPts.size()-1) {
-                                cv::circle(disp_frame, _input_data.ignrPts[i][j], click_rad, COLOURS[i%NCOLOURS], 1, CV_AA);
+                                cv::circle(disp_frame, _input_data.ignrPts[i][j], click_rad, COLOURS[i%NCOLOURS], 1, cv::LINE_AA);
                             }
-                            cv::line(disp_frame, _input_data.ignrPts[i][j], _input_data.ignrPts[i][(j+1)%_input_data.ignrPts[i].size()], COLOURS[i%NCOLOURS], 1, CV_AA);
+                            cv::line(disp_frame, _input_data.ignrPts[i][j], _input_data.ignrPts[i][(j+1)%_input_data.ignrPts[i].size()], COLOURS[i%NCOLOURS], 1, cv::LINE_AA);
                         }
                     }
                     
                     /// Display.
+                    if (_disp_scl > 0) {
+                        cv::resize(disp_frame, disp_frame, cv::Size(), _disp_scl, _disp_scl);
+                    }
                     cv::imshow("configGUI", disp_frame);
                     cv::waitKey(100);   //FIXME: why do we have to wait so long to make sure the frame is drawn?
                     
@@ -657,9 +721,9 @@ bool ConfigGui::run()
                 for (unsigned int i = 0; i < _input_data.ignrPts.size(); i++) {
                     for (unsigned int j = 0; j < _input_data.ignrPts[i].size(); j++) {
                         if (i == _input_data.ignrPts.size()-1) {
-                            cv::circle(disp_frame, _input_data.ignrPts[i][j], click_rad, COLOURS[i%NCOLOURS], 1, CV_AA);
+                            cv::circle(disp_frame, _input_data.ignrPts[i][j], click_rad, COLOURS[i%NCOLOURS], 1, cv::LINE_AA);
                         }
-                        cv::line(disp_frame, _input_data.ignrPts[i][j], _input_data.ignrPts[i][(j+1)%_input_data.ignrPts[i].size()], COLOURS[i%NCOLOURS], 1, CV_AA);
+                        cv::line(disp_frame, _input_data.ignrPts[i][j], _input_data.ignrPts[i][(j+1)%_input_data.ignrPts[i].size()], COLOURS[i%NCOLOURS], 1, cv::LINE_AA);
                     }
                 }
                 
@@ -674,11 +738,14 @@ bool ConfigGui::run()
                 
                 /// Display.
                 cv::imshow("zoomROI", zoom_frame);
+                if (_disp_scl > 0) {
+                    cv::resize(disp_frame, disp_frame, cv::Size(), _disp_scl, _disp_scl);
+                }
                 cv::imshow("configGUI", disp_frame);
                 key = cv::waitKey(5);
                 
                 /// State machine logic.
-                if (key == enter_key) {
+                if ((key == 0x0d) || (key == 0x0a)) {  // return
                     // if current poly is empty, assume we've finished
                     if (_input_data.ignrPts.empty() || _input_data.ignrPts.back().empty()) {
                         if (!_input_data.ignrPts.empty()) { _input_data.ignrPts.pop_back(); }
@@ -698,7 +765,7 @@ bool ConfigGui::run()
                         _cfg.add("roi_ignr", cfg_polys);
                         if (_cfg.write() <= 0) {
                             LOG_ERR("Error writing to config file (%s)!", _config_fn.c_str());
-                            _open = false;      // will cause exit
+                            open = false;      // will cause exit
                         }
                         
                         //// test read
@@ -720,65 +787,77 @@ bool ConfigGui::run()
             
             /// Choose method for defining animal frame.
             case R_INIT:
-                /// Load R+t transform from config file.
-                cfg_vec.clear();
-                if (_cfg.getVecDbl("c2a_r", cfg_vec)) {
-                    LOG_DBG("Read c2a_r = [%f %f %f]", cfg_vec[0], cfg_vec[1], cfg_vec[2]);
-                    R = CmPoint64f::omegaToMatrix(CmPoint(cfg_vec[0], cfg_vec[1], cfg_vec[2]));
-                }
-                else {
-                    LOG_DBG("Error reading c2a_r from config file! Re-running configuration ..");
-                    changeState(R_SLCT);
-                    break;
+                /// Check if corners specified (optional).
+                _input_data.sqrPts.clear();
+                if (_cfg.getStr("c2a_src", c2a_src)) {
+                    LOG_DBG("Found c2a_src: %s", c2a_src.c_str());
+
+                    /// Load square corners from config file.
+                    cfg_pts.clear();
+                    if (_cfg.getVecInt(c2a_src, cfg_pts)) {
+                        for (unsigned int i = 1; i < cfg_pts.size(); i += 2) {
+                            _input_data.sqrPts.push_back(cv::Point2d(cfg_pts[i - 1], cfg_pts[i]));
+                        }
+                    }
                 }
 
+                /// Load R+t transform from config file.
+                R.release();    // clear mat
                 cfg_vec.clear();
-                if (_cfg.getVecDbl("c2a_t", cfg_vec)) {
+                if (!reconfig && _cfg.getVecDbl("c2a_r", cfg_vec)) {
+                    LOG_DBG("Read c2a_r = [%f %f %f]", cfg_vec[0], cfg_vec[1], cfg_vec[2]);
+                    R = CmPoint64f::omegaToMatrix(CmPoint(cfg_vec[0], cfg_vec[1], cfg_vec[2])).t();     // transpose to lab-camera transform
+                }
+                else {
+                    LOG_WRN("Warning! c2a_r missing from config file. Looking for corner points..");
+                }
+
+                t.release();    // clear mat
+                cfg_vec.clear();
+                if (!reconfig && _cfg.getVecDbl("c2a_t", cfg_vec)) {
                     LOG_DBG("Read c2a_t = [%f %f %f]", cfg_vec[0], cfg_vec[1], cfg_vec[2]);
                     t = (cv::Mat_<double>(3, 1) << cfg_vec[0], cfg_vec[1], cfg_vec[2]);
                 }
                 else {
-                    LOG_DBG("Error reading c2a_t from config file! Re-running configuration ..");
+                    LOG_WRN("Warning! c2a_t missing from config file. Looking for corner points..");
+                }
+
+                if (R.empty() || t.empty()) {
+                    if (!_input_data.sqrPts.empty()) {
+                        LOG_DBG("Recomputing R+t from specified corner points...");
+
+                        /// Recompute R+t
+                        if (updateRt(c2a_src, R, t)) {
+                            saveC2ATransform(c2a_src, R, t);
+                        }
+                    }
+                }
+                else {
+                    LOG_WRN("Warning! When c2a_r and c2a_t are specified in the config file, c2a_src and associated corners points will be ignored.\nTo re-compute c2a_r and c2a_t, please delete these values or set reconfig : y in the config file and reconfigure.");
+                }
+
+                /// If c2a_r/t missing and couldn't re-compute from specified corners points.
+                if (R.empty() || t.empty()) {
+                    LOG_ERR("Error! Could not read or compute c2a_r and/or c2a_t. Re-running configuration..");
                     changeState(R_SLCT);
                     break;
                 }
 
-                LOG_WRN("Warning! When c2a_r and c2a_t are specified in the config file, c2a_src and associated corners points will be ignored.\nTo re-compute c2a_r and c2a_t, please delete these values from the config file and reconfigure.");
-
-                /// Check also if corners specified (unnecessary).
-                if (_cfg.getStr("c2a_src", cfg_r_src)) {
-                    LOG_DBG("Found c2a_src: %s", cfg_r_src.c_str());
-
-                    /// Load square corners from config file.
-                    cfg_pts.clear();
-                    if (_cfg.getVecInt(cfg_r_src, cfg_pts)) {
-                        _input_data.sqrPts.clear();
-                        for (unsigned int i = 1; i < cfg_pts.size(); i += 2) {
-                            _input_data.sqrPts.push_back(cv::Point2d(cfg_pts[i - 1], cfg_pts[i]));
-                        }
-
-                        /// Draw previous clicks.
-                        for (auto click : _input_data.sqrPts) {
-                            cv::circle(disp_frame, click, click_rad, Scalar(255, 255, 0), 1, CV_AA);
-                        }
-
-                        /// Draw reference corners.
-                        if (cfg_r_src == "c2a_cnrs_xy") {
-                            drawC2ACorners(disp_frame, XY_CNRS, R, t);
-                        }
-                        else if (cfg_r_src == "c2a_cnrs_yz") {
-                            drawC2ACorners(disp_frame, YZ_CNRS, R, t);
-                        }
-                        else if (cfg_r_src == "c2a_cnrs_xz") {
-                            drawC2ACorners(disp_frame, XZ_CNRS, R, t);
-                        }
-                    }
+                /// Draw previous clicks.
+                for (auto click : _input_data.sqrPts) {
+                    cv::circle(disp_frame, click, click_rad, Scalar(255, 255, 0), 1, cv::LINE_AA);
                 }
+
+                /// Draw reference corners.
+                drawC2ACorners(disp_frame, c2a_src, R, t);
 
                 /// Draw axes.
                 drawC2AAxes(disp_frame, R, t, r, c);
 
 				/// Display.
+                if (_disp_scl > 0) {
+                    cv::resize(disp_frame, disp_frame, cv::Size(), _disp_scl, _disp_scl);
+                }
 				cv::imshow("configGUI", disp_frame);
 				cv::waitKey(100);   //FIXME: why do we have to wait so long to make sure the frame is drawn?
 
@@ -846,18 +925,21 @@ bool ConfigGui::run()
                     {
                         case 1:
                             printf("\n\n\n  XY-square method.\n\n  Please click on the four corners of a square shape that is aligned with the animal's X-Y axes. The corners must be clicked in the following order: (+X,-Y), (+X,+Y), (-X,+Y), (-X,-Y). If your camera is looking down on the animal from above, then the four corners are (in order): TL, TR, BR, BL from the camera's perspective. If your camera is below the animal, then the order is TR, TL, BL, BR.\n\n  Make sure the displayed axis is the correct right-handed coordinate frame!!\n\n  You can hold F to mirror the axis if the handedness is incorrect.\n\n  Press ENTER when you are satisfied with the animal's axis, or press ESC to exit..\n\n");
+                            c2a_src = "c2a_cnrs_xy";
                             // advance state
 							changeState(R_XY);
                             break;
                             
                         case 2:
                             printf("\n\n\n  YZ-square method.\n\n  Please click on the four corners of a square shape that is aligned with the animal's Y-Z axes. The corners must be clicked in the following order: (-Y,-Z), (+Y,-Z), (+Y,+Z), (-Y,+Z). If your camera is behind the animal, then the four corners are (in order): TL, TR, BR, BL from the camera's perspective. If your camera is in front of the animal, then the order is TR, TL, BL, BR.\n\n  Make sure the displayed axis is the correct right-handed coordinate frame!!\n\n  You can hold F to mirror the axis if the handedness is incorrect.\n\n  Press ENTER when you are satisfied with the animal's axis, or press ESC to exit..\n\n");
+                            c2a_src = "c2a_cnrs_yz";
                             // advance state
 							changeState(R_YZ);
                             break;
                             
                         case 3:
                             printf("\n\n\n  XZ-square method.\n\n  Please click on the four corners of a square shape that is aligned with the animal's X-Z axes. The corners must be clicked in the following order: (+X,-Z), (-X,-Z), (-X,+Z), (+X,+Z). If your camera is to the animal's left side, then the four corners are (in order): TL, TR, BR, BL from the camera's perspective. If your camera is to the animal's right side, then the order is TR, TL, BL, BR.\n\n  Make sure the displayed axis is the correct right-handed coordinate frame!!\n\n  You can hold F to mirror the axis if the handedness is incorrect.\n\n  Press ENTER when you are satisfied with the animal's axis, or press ESC to exit..\n\n");
+                            c2a_src = "c2a_cnrs_xz";
                             // advance state
 							changeState(R_XZ);
                             break;
@@ -869,6 +951,7 @@ bool ConfigGui::run()
                             // break;
                             
                         case 5:
+                            c2a_src = "ext";
                             // advance state
 							changeState(R_EXT);
                             break;
@@ -887,13 +970,16 @@ bool ConfigGui::run()
             
                 /// Draw previous clicks.
                 for (auto click : _input_data.sqrPts) {
-                    cv::circle(disp_frame, click, click_rad, Scalar(255,255,0), 1, CV_AA);
+                    cv::circle(disp_frame, click, click_rad, Scalar(255,255,0), 1, cv::LINE_AA);
                 }
                 
                 /// Draw axes.
                 if (_input_data.sqrPts.size() == 4) {
-					updateC2ATransform(XY_CNRS, R, t);
-                    drawC2ACorners(disp_frame, XY_CNRS, R, t);
+                    if (_input_data.newEvent) {
+                        updateRt(c2a_src, R, t);
+                        _input_data.newEvent = false;
+                    }
+                    drawC2ACorners(disp_frame, c2a_src, R, t);
                     drawC2AAxes(disp_frame, R, t, r, c);
                 }
                 
@@ -905,16 +991,19 @@ bool ConfigGui::run()
                 
                 /// Display.
                 cv::imshow("zoomROI", zoom_frame);
+                if (_disp_scl > 0) {
+                    cv::resize(disp_frame, disp_frame, cv::Size(), _disp_scl, _disp_scl);
+                }
                 cv::imshow("configGUI", disp_frame);
                 key = cv::waitKey(5);
                 
                 /// State machine logic.
-                if (key == enter_key) {
+                if ((key == 0x0d) || (key == 0x0a)) {   // return
                     if ((_input_data.sqrPts.size() == 4) && !R.empty()) {
                         // dump corner points to config file
-						if (!saveC2ATransform(R, t)) {
+						if (!saveC2ATransform(c2a_src, R, t)) {
 							LOG_ERR("Error writing coordinate transform to config file!");
-                            _open = false;      // will cause exit
+                            open = false;      // will cause exit
 						}
                         
                         // advance state
@@ -937,13 +1026,16 @@ bool ConfigGui::run()
                 
                 /// Draw previous clicks.
                 for (auto click : _input_data.sqrPts) {
-                    cv::circle(disp_frame, click, click_rad, Scalar(255,255,0), 1, CV_AA);
+                    cv::circle(disp_frame, click, click_rad, Scalar(255,255,0), 1, cv::LINE_AA);
                 }
                 
                 /// Draw axes.
                 if (_input_data.sqrPts.size() == 4) {
-					updateC2ATransform(YZ_CNRS, R, t);
-                    drawC2ACorners(disp_frame, YZ_CNRS, R, t);
+                    if (_input_data.newEvent) {
+                        updateRt(c2a_src, R, t);
+                        _input_data.newEvent = false;
+                    }
+                    drawC2ACorners(disp_frame, c2a_src, R, t);
                     drawC2AAxes(disp_frame, R, t, r, c);
                 }
                 
@@ -955,16 +1047,19 @@ bool ConfigGui::run()
                 
                 /// Display.
                 cv::imshow("zoomROI", zoom_frame);
+                if (_disp_scl > 0) {
+                    cv::resize(disp_frame, disp_frame, cv::Size(), _disp_scl, _disp_scl);
+                }
                 cv::imshow("configGUI", disp_frame);
                 key = cv::waitKey(5);
                 
                 /// State machine logic.
-                if (key == enter_key) {
+                if ((key == 0x0d) || (key == 0x0a)) {   // return
 					if ((_input_data.sqrPts.size() == 4) && !R.empty()) {
                         // dump corner points to config file
-						if (!saveC2ATransform(R, t)) {
+						if (!saveC2ATransform(c2a_src, R, t)) {
 							LOG_ERR("Error writing coordinate transform to config file!");
-                            _open = false;      // will cause exit
+                            open = false;      // will cause exit
 						}
                         
                         // advance state
@@ -987,13 +1082,16 @@ bool ConfigGui::run()
                 
                 /// Draw previous clicks.
                 for (auto click : _input_data.sqrPts) {
-                    cv::circle(disp_frame, click, click_rad, Scalar(255,255,0), 1, CV_AA);
+                    cv::circle(disp_frame, click, click_rad, Scalar(255,255,0), 1, cv::LINE_AA);
                 }
                 
                 /// Draw axes.
                 if (_input_data.sqrPts.size() == 4) {
-					updateC2ATransform(XZ_CNRS, R, t);
-                    drawC2ACorners(disp_frame, XZ_CNRS, R, t);
+                    if (_input_data.newEvent) {
+                        updateRt(c2a_src, R, t);
+                        _input_data.newEvent = false;
+                    }
+                    drawC2ACorners(disp_frame, c2a_src, R, t);
                     drawC2AAxes(disp_frame, R, t, r, c);
                 }
                 
@@ -1005,16 +1103,19 @@ bool ConfigGui::run()
                 
                 /// Display.
                 cv::imshow("zoomROI", zoom_frame);
+                if (_disp_scl > 0) {
+                    cv::resize(disp_frame, disp_frame, cv::Size(), _disp_scl, _disp_scl);
+                }
                 cv::imshow("configGUI", disp_frame);
                 key = cv::waitKey(5);
                 
                 /// State machine logic.
-                if (key == enter_key) {
+                if ((key == 0x0d) || (key == 0x0a)) {   // return
 					if ((_input_data.sqrPts.size() == 4) && !R.empty()) {
                         // dump corner points to config file
-						if (!saveC2ATransform(R, t)) {
+						if (!saveC2ATransform(c2a_src, R, t)) {
 							LOG_ERR("Error writing coordinate transform to config file!");
-                            _open = false;      // will cause exit
+                            open = false;      // will cause exit
 						}
                         
                         // advance state
@@ -1066,7 +1167,7 @@ bool ConfigGui::run()
 
                 if (_cfg.write() <= 0) {
                     LOG_ERR("Error writing to config file (%s)!", _config_fn.c_str());
-                    _open = false;      // will cause exit
+                    open = false;      // will cause exit
                 }
             
                 // advance state
@@ -1080,7 +1181,7 @@ bool ConfigGui::run()
             
             /// Exit config.
             case EXIT:
-                key = exit_key;
+                key = 0x1b; // esc
                 break;
         }
     }
@@ -1089,7 +1190,7 @@ bool ConfigGui::run()
 
 	/// Save config image
 	//cv::cvtColor(_frame, disp_frame, CV_GRAY2RGB);
-    disp_frame = _frame.clone();
+    disp_frame = frame.clone();
 
 	// draw fitted circumference
 	if (r > 0) {
@@ -1100,21 +1201,15 @@ bool ConfigGui::run()
 	for (unsigned int i = 0; i < _input_data.ignrPts.size(); i++) {
 		for (unsigned int j = 0; j < _input_data.ignrPts[i].size(); j++) {
 			if (i == _input_data.ignrPts.size() - 1) {
-				cv::circle(disp_frame, _input_data.ignrPts[i][j], click_rad, COLOURS[i%NCOLOURS], 1, CV_AA);
+				cv::circle(disp_frame, _input_data.ignrPts[i][j], click_rad, COLOURS[i%NCOLOURS], 1, cv::LINE_AA);
 			}
-			cv::line(disp_frame, _input_data.ignrPts[i][j], _input_data.ignrPts[i][(j + 1) % _input_data.ignrPts[i].size()], COLOURS[i%NCOLOURS], 1, CV_AA);
+			cv::line(disp_frame, _input_data.ignrPts[i][j], _input_data.ignrPts[i][(j + 1) % _input_data.ignrPts[i].size()], COLOURS[i%NCOLOURS], 1, cv::LINE_AA);
 		}
 	}
 
 	// draw animal coordinate frame
 	if (_input_data.sqrPts.size() == 4) {
-		if (cfg_r_src == "c2a_cnrs_xy") {
-            drawC2ACorners(disp_frame, XY_CNRS, R, t);
-		} else if (cfg_r_src == "c2a_cnrs_yz") {
-            drawC2ACorners(disp_frame, YZ_CNRS, R, t);
-		} else if (cfg_r_src == "c2a_cnrs_xz") {
-            drawC2ACorners(disp_frame, XZ_CNRS, R, t);
-		}
+        drawC2ACorners(disp_frame, c2a_src, R, t);
 	}
     drawC2AAxes(disp_frame, R, t, r, c);
 
@@ -1125,12 +1220,47 @@ bool ConfigGui::run()
 		LOG_ERR("Error writing config image to disk!");
 	}
 
-    if (_open) {
+    //// compute thresholding priors
+    //auto thr_mode = static_cast<THR_MODE>(_cfg.get<int>("thr_mode"));   // 0 = default (adapt); 1 = norm w/ priors
+    //if (thr_mode == NORM_PRIORS) {
+
+    //    LOG("Computing ROI thresholding priors ..");
+
+        //// rewind source
+        //_source->rewind();
+
+        //vector<vector<uint16_t>> hist;
+
+        //Mat maximg = frame.clone();
+        //Mat minimg = frame.clone();
+        //auto t0 = elapsed_secs();
+        //while (_source->grab(frame)) {
+        //    for (int i = 0; i < _h; i++) {
+        //        uint8_t* pmin = minimg.ptr(i);
+        //        uint8_t* pmax = maximg.ptr(i);
+        //        const uint8_t* pimg = frame.ptr(i);
+        //        for (int j = 0; j < _w * 3; j++) {
+        //            uint8_t p = pimg[j];
+        //            if (p > pmax[j]) { pmax[j] = p; }
+        //            if (p < pmin[j]) { pmin[j] = p; }
+        //        }
+        //    }
+        
+    //        // Drop out after max 30s (avoid infinite loop when running live)
+    //        auto t1 = elapsed_secs();
+    //        if ((t1 - t0) > 30) { break; }
+    //    }
+    //    frame = maximg - minimg;
+    //}
+
+
+
+    if (open) {
         LOG("Configuration complete!");
     } else {
         LOG_WRN("\n\nWarning! There were errors and the configuration file may not have been properly updated. Please run configuration again.");
     }
     
     LOG("Exiting configuration!");
-    return _open;
+    return open;
 }

@@ -7,11 +7,11 @@
 #include "ConfigParser.h"
 
 #include "Logger.h"
+#include "fictrac_version.h"
 
 #include <cstdio>
 #include <iostream>
 #include <fstream>
-#include <sstream>
 #include <exception>    // try, catch
 #include <algorithm>    // erase, remove
 
@@ -71,20 +71,20 @@ int ConfigParser::read(string fn)
         }
 
         /// Tokenise
-        const string whitespace = ", \t\n\r";
+        const string whitespace = ", \t\n";
         std::size_t delim = line.find(":");
         if (delim >= line.size()) { continue; } // skip blank lines
         string key = line.substr(0, line.find_last_not_of(whitespace, delim - 1) + 1), val = "";
         try {
             val = line.substr(line.find_first_not_of(whitespace, delim + 1));
-            //val.erase(std::remove(val.begin(), val.end(), '\r'), val.end());    // remove /r under linux
+            val.erase(std::remove(val.begin(), val.end(), '\r'), val.end());    // remove /r under linux
         }
         catch (...) {}  // add blank values
 
         /// Add to map
         _data[key] = val;
 
-        LOG_DBG("Extracted key: %s  val: %s", key.c_str(), val.c_str());
+        LOG_DBG("Extracted key: |%s|  val: |%s|", key.c_str(), val.c_str());
     }
 
     /// Clean up
@@ -103,12 +103,12 @@ int ConfigParser::write(string fn)
     /// Open output file
     std::ofstream f(fn);
     if (!f.is_open()) {
-        LOG_ERR("Could not open config file %s for writing!", fn);
+        LOG_ERR("Could not open config file %s for writing!", fn.c_str());
         return -1;
     }
     
     /// Write header string
-    f << "## FicTrac config file (build " << __DATE__ << ")" << std::endl;
+    f << "## FicTrac v" << FICTRAC_VERSION_MAJOR << "." << FICTRAC_VERSION_MIDDLE << "." << FICTRAC_VERSION_MINOR << " config file (build date " << __DATE__ << ")" << std::endl;
 
     /// Write map
     static char tmps[4096];
@@ -116,7 +116,7 @@ int ConfigParser::write(string fn)
         // warning: super long str vals will cause overwrite error!
         try { sprintf(tmps, "%-16s : %s\n", it.first.c_str(), it.second.c_str()); }
         catch (std::exception& e) {
-			LOG_ERR("Error writing key/value pair (%s : %s)! Error was: %s", it.first, it.second, e.what());
+			LOG_ERR("Error writing key/value pair (%s : %s)! Error was: %s", it.first.c_str(), it.second.c_str(), e.what());
             f.close();
             return -1;
         }
@@ -124,9 +124,11 @@ int ConfigParser::write(string fn)
     }
 
     /// Write comments
-    f << std::endl;
-    for (auto c : _comments) {
-        f << c << std::endl;
+    if (_comments.size() > 0) {
+        f << std::endl;
+        for (auto c : _comments) {
+            f << c << std::endl;
+        }
     }
 
     /// Clean up
@@ -141,29 +143,15 @@ int ConfigParser::write(string fn)
 ///
 ///
 ///
-string ConfigParser::operator()(string key)
+string ConfigParser::operator()(string key) const
 {
-    string s = "";
-    getStr(key, s);
-    return s;
-}
-
-///
-///
-///
-template<typename T>
-T ConfigParser::get(string key)
-{
-    T val;
-    string s;
-    if (getStr(key, s)) {
-        std::stringstream ss(s);
-        try { ss >> val; }
-        catch (std::exception& e) {
-            LOG_ERR("Error parsing config file value (%s : %s)! Error was: %s", key.c_str(), ss.str().c_str(), e.what());
-        }
+    try {
+        return _data.at(key);
     }
-    return val;
+    catch (...) {
+        LOG_DBG("Key (%s) not found.", key.c_str());
+    }
+    return "";
 }
 
 ///
@@ -175,7 +163,7 @@ bool ConfigParser::getStr(string key, string& val) {
         val = _data[key];
         return true;
     }
-    LOG_WRN("Warning! Key (%s) not found.", key.c_str());
+    LOG_DBG("Key (%s) not found.", key.c_str());
     return false;
 }
 
@@ -344,5 +332,5 @@ void ConfigParser::printAll()
     for (auto& it : _data) {
         s << "\t" << it.first << "\t: " << it.second << std::endl;
     }
-    LOG_DBG("%s", s.str());
+    LOG_DBG("%s", s.str().c_str());
 }

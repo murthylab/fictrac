@@ -8,6 +8,7 @@
 
 #include "typesvars.h"
 #include "ConfigParser.h"
+#include "FrameSource.h"
 
 #include "SharedPointers.h"
 SHARED_PTR(CameraModel);
@@ -23,9 +24,8 @@ public:
     ConfigGui(std::string config_fn);
     ~ConfigGui();
     
+    bool is_open();
     bool run();
-    
-    bool is_open() { return _open; }
     
     enum INPUT_MODE {
         CIRC_INIT,
@@ -63,12 +63,14 @@ public:
         std::vector<std::vector<cv::Point2d> > ignrPts;
         std::vector<cv::Point2d> sqrPts;
         INPUT_MODE mode;
+        float ptScl;
         
         INPUT_DATA() {
             newEvent = false;
             mode =  CIRC_INIT;
             cursorPt.x = -1;
             cursorPt.y = -1;
+            ptScl = -1;
             addPoly();
         }
         
@@ -80,20 +82,21 @@ public:
 private:
     bool setFrame(cv::Mat& frame);
 
-    bool updateC2ATransform(const cv::Mat& ref_cnrs, cv::Mat& R, cv::Mat& t);
+    bool updateRt(const std::string& ref_str, cv::Mat& R, cv::Mat& t);
     //void drawC2ATransform(cv::Mat& disp_frame, const cv::Mat& ref_cnrs, const cv::Mat& R, const cv::Mat& t, const double& r, const CmPoint& c);
     void drawC2AAxes(cv::Mat& disp_frame, const cv::Mat& R, const cv::Mat& t, const double& r, const CmPoint& c);
-    void drawC2ACorners(cv::Mat& disp_frame, const cv::Mat& ref_cnrs, const cv::Mat& R, const cv::Mat& t);
-    bool saveC2ATransform(const cv::Mat& R, const cv::Mat& t);
+    void drawC2ACorners(cv::Mat& disp_frame, const std::string& ref_str, const cv::Mat& R, const cv::Mat& t);
+    bool saveC2ATransform(const std::string& ref_str, const cv::Mat& R, const cv::Mat& t);
 
     void changeState(INPUT_MODE new_state);
     
 private:
-    bool _open;
     std::string _config_fn, _base_fn;
     ConfigParser _cfg;
-    cv::Mat _frame;
-    size_t _w, _h;
+    int _w, _h;
+    float _disp_scl;
     CameraModelPtr _cam_model;
     INPUT_DATA _input_data;
+
+    std::shared_ptr<FrameSource> _source;
 };

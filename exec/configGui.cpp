@@ -32,7 +32,7 @@ int main(int argc, char *argv[])
     PRINT("/// \tCONFIG_FN\tPath to input/output config file.");
     PRINT("/// \tLOG_VERBOSITY\t[Optional] One of DBG, INF, WRN, ERR.");
     PRINT("///");
-    PRINT("/// Version: %2d.%02d (build date: %s)", FICTRAC_VERSION_MAJOR, FICTRAC_VERSION_MINOR, __DATE__);
+	PRINT("/// Version: %d.%d.%d (build date: %s)", FICTRAC_VERSION_MAJOR, FICTRAC_VERSION_MIDDLE, FICTRAC_VERSION_MINOR, __DATE__);
     PRINT("///\n");
 
     /// Parse args.
@@ -64,9 +64,6 @@ int main(int argc, char *argv[])
         getchar_clean();
         return -1;
     }
-
-    /// Init OpenCV windows - only used by GTK backend?
-    cvStartWindowThread();
     
     /// Run configuration GUI.
     bool ret = cfg.run();
